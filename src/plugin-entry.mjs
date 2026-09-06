@@ -132,6 +132,10 @@ export async function apply (ctx, rawConfig) {
         if (kind === undefined || kind === null) return
         const body = buildTurnEndBody(data, '')
         if (body === undefined) return // unknown kind: silently ignored
+        // A turn-scoped provider failure surfaces as BOTH agent/error (bus)
+        // and turn/end error (session). The turn/end push is the richer one —
+        // cancel the pending delayed agent-error push for this session.
+        if (kind === 'error') cancelPendingAgentError(session.id)
         safeAsync(
           dispatcher.push(`turn-end:${kind}`, body, key),
           'turn/end push',
@@ -167,18 +171,48 @@ export async function apply (ctx, rawConfig) {
   }
 
   // ---- agent/error bus event ---------------------------------------------
+  // One provider failure surfaces twice in the host: agent/error on the bus,
+  // then turn/end error on the session. The turn/end push carries the fuller
+  // picture (turn number + excerpt-ready body), so the agent/error push waits
+  // agentErrorDelayMs and is cancelled when the turn-end push fires for the
+  // same session. Failures outside any turn still push after the delay.
+  const pendingAgentErrors = new Map() // sessionKey -> { timer, push }
+  function cancelPendingAgentError (sessionKey) {
+    const pending = pendingAgentErrors.get(sessionKey)
+    if (!pending) return
+    clearTimeout(pending.timer)
+    pendingAgentErrors.delete(sessionKey)
+  }
   if (config.events.agentError) {
     const disposer = subscribeGlobal(ctx, 'agent/error', (payload) => {
       try {
-        safeAsync(
-          dispatcher.push('agent-error', buildAgentErrorBody(payload), null),
-          'agent/error push',
-        )
+        const sessionKey = payload?.agent?.session?.id
+        const body = buildAgentErrorBody(payload)
+        const timer = setTimeout(() => {
+          if (sessionKey !== undefined && sessionKey !== null) pendingAgentErrors.delete(sessionKey)
+          safeAsync(
+            dispatcher.push('agent-error', body, null),
+            'agent/error push',
+          )
+        }, config.agentErrorDelayMs)
+        if (timer.unref) timer.unref()
+        if (sessionKey !== undefined && sessionKey !== null) {
+          const previous = pendingAgentErrors.get(sessionKey)
+          if (previous) clearTimeout(previous.timer)
+          pendingAgentErrors.set(sessionKey, { timer })
+        }
       } catch (error) {
         console.error(`[${PLUGIN_ID}] agent/error handler failed: ${error instanceof Error ? error.message : String(error)}`)
       }
     })
     if (disposer) disposers.push(disposer)
+    // dispose: drop pending delayed pushes so shutdown does not emit stragglers
+    try {
+      ctx.effect(() => () => {
+        for (const { timer } of pendingAgentErrors.values()) clearTimeout(timer)
+        pendingAgentErrors.clear()
+      }, 'dsh-qq-notify pending agent errors')
+    } catch {}
   }
 
   // ---- agent-callable notify tool -----------------------------------------

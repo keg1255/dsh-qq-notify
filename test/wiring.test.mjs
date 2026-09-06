@@ -183,13 +183,29 @@ test('turn/end completed: debounced, last-of-burst wins, excerpt attached', asyn
 })
 
 test('turn/end: non-completed kinds push instantly with mapped text', async () => {
-  const { ctx, sends, cleanup } = await bootPlugin()
+  const { ctx, sends, cleanup } = await bootPlugin({ config: { agentErrorDelayMs: 0 } })
   const session = fakeSession('sess-c', [])
   ctx.emit('session/event', session, { type: 'turn/end', seq: 1, data: { turn: 1, reason: { kind: 'aborted', reason: 'user' } } })
   await flush()
   assert.equal(sends.length, 1)
   assert.ok(sends[0].content.includes('⏹'))
   assert.ok(sends[0].content.includes('已中止'))
+  cleanup()
+})
+
+test('turn/end error: carries the provider error code and message', async () => {
+  const { ctx, sends, cleanup } = await bootPlugin({ config: { agentErrorDelayMs: 0 } })
+  const session = fakeSession('sess-err', [])
+  ctx.emit('session/event', session, {
+    type: 'turn/end',
+    seq: 1,
+    data: { turn: 6, reason: { kind: 'error', error: { code: 'SERVER', message: 'OpenAI API error (500): internal server error' } } },
+  })
+  await flush()
+  assert.equal(sends.length, 1)
+  assert.ok(sends[0].content.includes('❌'))
+  assert.ok(sends[0].content.includes('`SERVER`'))
+  assert.ok(sends[0].content.includes('OpenAI API error (500)'))
   cleanup()
 })
 
@@ -244,13 +260,48 @@ test('user-questions/request: pushed and strictly passed through to next()', asy
   cleanup()
 })
 
-test('agent/error: pushed instantly with the error message', async () => {
-  const { ctx, sends, cleanup } = await bootPlugin()
-  ctx.emit('agent/error', { agent: { session: fakeSession('sess-f', []) }, turn: 3, error: { message: 'provider 500' } })
+test('agent/error: pushed after the dedup grace with the error message', async () => {
+  const { ctx, sends, cleanup } = await bootPlugin({ config: { agentErrorDelayMs: 200 } })
+  ctx.emit('agent/error', { agent: { session: fakeSession('sess-f', []) }, turn: 3, error: { code: 'SERVER', message: 'provider 500' } })
   await flush()
+  assert.equal(sends.length, 0, 'no push within the grace window')
+  await new Promise((resolve) => setTimeout(resolve, 250))
   assert.equal(sends.length, 1)
   assert.ok(sends[0].content.includes('🔥'))
   assert.ok(sends[0].content.includes('provider 500'))
+  assert.ok(sends[0].content.includes('SERVER'), 'error code included')
+  cleanup()
+})
+
+test('agent/error dedup: turn/end error same session cancels the delayed push', async () => {
+  const { ctx, sends, cleanup } = await bootPlugin({ config: { agentErrorDelayMs: 40 } })
+  const session = fakeSession('sess-dup', [])
+  ctx.emit('agent/error', { agent: { session }, turn: 3, error: { code: 'SERVER', message: 'OpenAI API error (500)' } })
+  ctx.emit('session/event', session, { type: 'turn/end', seq: 9, data: { turn: 3, reason: { kind: 'error', error: { code: 'SERVER', message: 'OpenAI API error (500)' } } } })
+  await flush()
+  assert.equal(sends.length, 1, 'only the richer turn-end push went out')
+  assert.ok(sends[0].content.includes('❌'), 'the turn-end error push is the one delivered')
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(sends.length, 1, 'delayed agent-error push was cancelled, not queued')
+  cleanup()
+})
+
+test('agent/error dedup: same failure on a DIFFERENT session still pushes', async () => {
+  const { ctx, sends, cleanup } = await bootPlugin({ config: { agentErrorDelayMs: 5 } })
+  ctx.emit('agent/error', { agent: { session: fakeSession('sess-other', []) }, turn: 1, error: { message: 'boom' } })
+  ctx.emit('session/event', fakeSession('sess-unrelated', []), { type: 'turn/end', seq: 1, data: { turn: 1, reason: { kind: 'error', error: { code: 'X', message: 'boom' } } } })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(sends.length, 2, 'both pushes delivered (different sessions)')
+  cleanup()
+})
+
+test('agent/error dedup: non-error turn ends do NOT cancel the pending push', async () => {
+  const { ctx, sends, cleanup } = await bootPlugin({ config: { agentErrorDelayMs: 5 } })
+  const session = fakeSession('sess-keep', [])
+  ctx.emit('agent/error', { agent: { session }, turn: 2, error: { message: 'dangling failure' } })
+  ctx.emit('session/event', session, { type: 'turn/end', seq: 1, data: { turn: 2, reason: { kind: 'aborted', reason: { kind: 'user' } } } })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(sends.length, 2, 'aborted push + delayed agent-error push both delivered')
   cleanup()
 })
 

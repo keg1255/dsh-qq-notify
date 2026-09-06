@@ -9,8 +9,9 @@ DSH 插件：通过自建 QQ 推送中继站（`notice.inu1255.cn/qq/send`）推
 | `approval/asked`（session/event） | **立即推送** | 🔐 需要你批准：工具 + 原因 |
 | `user-questions/request`（ask_user 瀑布） | **立即推送**，严格旁路观察（`return next()`，绝不吞掉问答流） | 💬 Agent 有问题要问你 |
 | `turn/end` `completed` | **10 秒尾沿防抖**：同一 session 连续完成只推最后一条，附最后一条助手消息摘录（≤500 字符） | ✅ 任务完成 |
-| `turn/end` 其他 kind（error/blocked/aborted/max-tokens/interrupted） | **立即推送**；未知 kind 静默忽略 | ❌ 任务出错 / ⛔ 任务受阻 / ⏹ 已中止 / 🔢 达到 token 上限 / ⏸ 已被打断 |
-| `agent/error`（总线事件） | **立即推送** | 🔥 Agent 内部错误 |
+| `turn/end` `error`（接口出错中断任务） | **立即推送**，含错误码 + provider 错误信息（如 `SERVER: OpenAI API error (500)`） | ❌ 任务出错 |
+| `turn/end` 其他 kind（blocked/aborted/max-tokens/interrupted） | **立即推送**；未知 kind 静默忽略 | ⛔ 任务受阻（提示等待输入）/ ⏹ 已中止（含中止原因）/ 🔢 达到 token 上限 / ⏸ 已被打断 |
+| `agent/error`（总线事件） | **延迟 5 秒推送**（`agentErrorDelayMs`）；同一 session 的 `turn/end error` 先到则取消 —— 一次接口故障只收一条通知 | 🔥 Agent 内部错误 |
 
 助手摘录取法：`session.snapshotEvents()` 从尾倒序找最后一条 `assistant/message`，取 `data.message.content` 中 `type === 'text'` 块的 text 拼接（避开 reasoning/tool-call 块）。
 
@@ -49,6 +50,7 @@ DSH 插件：通过自建 QQ 推送中继站（`notice.inu1255.cn/qq/send`）推
 | `summaryMaxChars` | `500` | 摘录最大字符数 |
 | `timeoutMs` | `10000` | 单次 POST 超时（5xx/网络错误自动重试 1 次） |
 | `events.*` | 全 `true` | 分线开关 |
+| `agentErrorDelayMs` | `5000` | agent/error 去重宽限：同 session 的 turn/end error 先到则取消该推送 |
 | `tool.enabled` | `true` | 是否注册 notify 工具 |
 | `tool.rateLimitPerMinute` | `10` | notify 工具滑动窗口限流 |
 

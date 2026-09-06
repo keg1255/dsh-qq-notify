@@ -88,6 +88,7 @@ export function buildAgentErrorBody (payload) {
   const turn = Number.isFinite(payload?.turn) ? payload.turn : undefined
   const lines = ['🔥 **Agent 内部错误**']
   if (turn !== undefined) lines.push(`- 回合：turn ${turn}`)
+  if (typeof error?.code === 'string' && error.code !== '') lines.push(`- 错误码：\`${error.code}\``)
   lines.push(`- 错误：${message !== '' ? clip(message, 300) : '(无错误信息)'}`)
   return lines.join('\n')
 }
@@ -105,9 +106,18 @@ export function buildTurnEndBody (data, excerpt) {
   const lines = [`${head.emoji} **${head.label}**`]
   if (Number.isFinite(data?.turn)) lines.push(`- 回合：turn ${data.turn}`)
   if (kind === 'error') {
-    const message = oneLine(data?.reason?.error?.message)
+    const error = data?.reason?.error ?? {}
+    const message = oneLine(error.message)
+    if (typeof error.code === 'string' && error.code !== '') lines.push(`- 错误码：\`${error.code}\``)
     if (message !== '') lines.push(`- 错误：${clip(message, 300)}`)
+    else if (typeof error.code !== 'string') lines.push('- 错误：(无错误信息)')
   }
+  if (kind === 'aborted') {
+    const cause = data?.reason?.reason
+    const causeText = oneLine(typeof cause === 'object' && cause !== null ? cause.kind : cause)
+    if (causeText !== '') lines.push(`- 中止原因：${causeText}`)
+  }
+  if (kind === 'blocked') lines.push('- 任务在等待你的输入（未完成，请回来看一眼）')
   const summary = typeof excerpt === 'string' ? excerpt.trim() : ''
   if (summary !== '') lines.push('', `> ${summary.replace(/\n/g, '\n> ')}`)
   return lines.join('\n')
