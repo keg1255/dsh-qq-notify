@@ -1,0 +1,52 @@
+{
+  "name": "dsh-qq-notify",
+  "version": "0.1.0",
+  "description": "DSH plugin: QQ push notifications via notice.inu1255.cn relay — approval/ask-user asks instantly, turn completion/errors with assistant excerpt, agent-callable notify tool, JSONL delivery ledger. Zero runtime dependencies.",
+  "type": "module",
+  "license": "MIT",
+  "main": "src/plugin-entry.mjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "notify",
+    "qq"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dshWorkshop": {
+    "type": "plugin",
+    "compatibility": {
+      "dshVersions": "0.1.2-rc.1"
+    },
+    "runtime": "host",
+    "entry": "src/plugin-entry.mjs",
+    "events": [
+      "session/event",
+      "user-questions/request",
+      "agent/error"
+    ]
+  },
+  "files": [
+    "src",
+    "test",
+    "cordis.patch.yml",
+    "README.md"
+  ]
+}

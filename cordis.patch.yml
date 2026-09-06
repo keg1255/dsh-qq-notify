@@ -1,0 +1,29 @@
+# dsh-qq-notify bundle patch: one insert row.
+# The package's default export is the cordis plugin applied as `id: dsh-qq-notify`;
+# config here is the shipped default and may be overridden per-id by the user
+# layer (~/.dsh/profiles/web/cordis.patch.yml, field-level whole replacement).
+#
+# openid is intentionally NOT shipped: your QQ push identity belongs in your
+# own user layer only. With an empty openid the plugin loads passively (it
+# warns on console.error and never sends) until you configure one:
+#
+#   - id: dsh-qq-notify
+#     config:
+#       openid: '<your openid>'
+- insert:
+    - id: dsh-qq-notify
+      name: 'dsh-qq-notify'
+      config:
+        enabled: true
+        url: 'http://notice.inu1255.cn/qq/send'
+        openid: ''
+        debounceMs: 10000
+        summaryMaxChars: 500
+        events:
+          turnEnd: true
+          approval: true
+          askUser: true
+          agentError: true
+        tool:
+          enabled: true
+          rateLimitPerMinute: 10
