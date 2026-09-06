@@ -4,6 +4,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { hostname } from 'node:os'
 import { resolveConfig, DEFAULTS } from '../src/config.mjs'
 
 test('resolveConfig: empty object yields all defaults', () => {
@@ -51,6 +52,15 @@ test('resolveConfig: explicit values override defaults', () => {
   assert.equal(config.events.approval, true)
   assert.equal(config.tool.rateLimitPerMinute, 3)
   assert.equal(config.tool.enabled, true)
+})
+
+test('resolveConfig: serverName defaults to short hostname and accepts override', () => {
+  const short = hostname().replace(/\.local$/, '')
+  const defaults = resolveConfig({})
+  assert.equal(defaults.serverName, short)
+  assert.equal(resolveConfig({ serverName: '  prod-1  ' }).serverName, 'prod-1')
+  assert.equal(resolveConfig({ serverName: '' }).serverName, short, 'blank falls back to hostname')
+  assert.equal(resolveConfig({ serverName: 42 }).serverName, short, 'non-string falls back')
 })
 
 test('resolveConfig: invalid values fall back to defaults', () => {

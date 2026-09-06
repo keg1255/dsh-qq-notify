@@ -29,6 +29,7 @@ import {
   buildAgentErrorBody,
   buildTurnEndBody,
   lastAssistantExcerpt,
+  workspaceNameOf,
 } from './message.mjs'
 import { SlidingWindowLimiter } from './rate-limit.mjs'
 import { createNotifyTool } from './notify-tool.mjs'
@@ -93,6 +94,12 @@ export async function apply (ctx, rawConfig) {
   const pendingCompleted = new Map() // sessionId -> { session, event }
   const completedDebouncer = new TurnEndDebouncer(config.debounceMs, (task) => task())
 
+  /** Server + workspace context lines shown on every push. */
+  const ctxInfoFor = (session) => ({
+    serverName: config.serverName,
+    workspaceName: workspaceNameOf(session),
+  })
+
   console.error(`[${PLUGIN_ID}] loaded (url=${config.url}, ledger=${ledgerPathFor(stateDir) || 'disabled'}, debounce=${config.debounceMs}ms)`)
 
   // ---- session events (approval/asked + turn/end) ------------------------
@@ -104,7 +111,7 @@ export async function apply (ctx, rawConfig) {
       if (event.type === 'approval/asked') {
         if (!config.events.approval) return
         safeAsync(
-          dispatcher.push('approval', buildApprovalBody(event.data), key),
+          dispatcher.push('approval', buildApprovalBody(event.data, ctxInfoFor(session)), key),
           'approval push',
         )
         return
@@ -121,7 +128,7 @@ export async function apply (ctx, rawConfig) {
             pendingCompleted.delete(session.id)
             if (!latest) return
             const excerpt = readAssistantExcerpt(latest.session, config.summaryMaxChars)
-            const body = buildTurnEndBody(latest.event.data, excerpt)
+            const body = buildTurnEndBody(latest.event.data, excerpt, ctxInfoFor(latest.session))
             if (body === undefined || body === '') return
             await dispatcher.push('turn-end:completed', body, dedupKeyFor(latest.session, latest.event))
           })
@@ -130,7 +137,7 @@ export async function apply (ctx, rawConfig) {
         // Non-completed kinds push instantly; unknown kinds never arrive here
         // because buildTurnEndBody maps them to undefined and we skip first.
         if (kind === undefined || kind === null) return
-        const body = buildTurnEndBody(data, '')
+        const body = buildTurnEndBody(data, '', ctxInfoFor(session))
         if (body === undefined) return // unknown kind: silently ignored
         // A turn-scoped provider failure surfaces as BOTH agent/error (bus)
         // and turn/end error (session). The turn/end push is the richer one —
@@ -156,7 +163,7 @@ export async function apply (ctx, rawConfig) {
         safeAsync(
           dispatcher.push(
             'ask-user',
-            buildAskUserBody(request?.questions),
+            buildAskUserBody(request?.questions, { serverName: config.serverName, workspaceName: workspaceNameOf(request?.agent?.session) }),
             request?.questions?.[0]?.id !== undefined ? `ask:${request.questions[0].id}` : undefined,
           ),
           'ask-user push',
@@ -187,7 +194,7 @@ export async function apply (ctx, rawConfig) {
     const disposer = subscribeGlobal(ctx, 'agent/error', (payload) => {
       try {
         const sessionKey = payload?.agent?.session?.id
-        const body = buildAgentErrorBody(payload)
+        const body = buildAgentErrorBody(payload, { serverName: config.serverName, workspaceName: workspaceNameOf(payload?.agent?.session) })
         const timer = setTimeout(() => {
           if (sessionKey !== undefined && sessionKey !== null) pendingAgentErrors.delete(sessionKey)
           safeAsync(
@@ -218,7 +225,7 @@ export async function apply (ctx, rawConfig) {
   // ---- agent-callable notify tool -----------------------------------------
   if (config.tool.enabled) {
     try {
-      const disposer = await registerNotifyTool(ctx, dispatcher, limiter)
+      const disposer = await registerNotifyTool(ctx, dispatcher, limiter, config)
       if (disposer) disposers.push(disposer)
     } catch (error) {
       console.error(`[${PLUGIN_ID}] notify tool registration failed (continuing without it): ${error instanceof Error ? error.message : String(error)}`)
@@ -254,13 +261,13 @@ function readAssistantExcerpt (session, maxChars) {
 }
 
 /** Register the notify tool; returns its disposer. */
-async function registerNotifyTool (ctx, dispatcher, limiter) {
+async function registerNotifyTool (ctx, dispatcher, limiter, config) {
   if (typeof ctx?.tools?.register !== 'function') {
     console.error(`[${PLUGIN_ID}] tools registry unavailable; notify tool not registered`)
     return undefined
   }
   const push = async (content) => dispatcher.push('tool', content)
-  const definition = await createNotifyTool(push, limiter)
+  const definition = await createNotifyTool(push, limiter, { serverName: config.serverName })
   return ctx.tools.register(definition)
 }
 

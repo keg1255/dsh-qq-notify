@@ -81,12 +81,28 @@ test('turnEndKindLabel: unknown kinds return undefined (silently ignored)', () =
   assert.equal(turnEndKindLabel(undefined), undefined)
 })
 
-test('buildTurnEndBody: completed includes excerpt and turn number', () => {
-  const body = buildTurnEndBody({ turn: 3, reason: { kind: 'completed' } }, '这是最后一条助手消息')
-  assert.ok(body.includes('✅'))
-  assert.ok(body.includes('任务完成'))
-  assert.ok(body.includes('turn 3'))
+test('buildTurnEndBody: completed is minimal — excerpt with context, no headline/turn/quote', () => {
+  const body = buildTurnEndBody(
+    { turn: 3, reason: { kind: 'completed' } },
+    '这是最后一条助手消息',
+    { serverName: 'my-server', workspaceName: 'my-project' },
+  )
   assert.ok(body.includes('这是最后一条助手消息'))
+  assert.ok(body.includes('服务器：my-server · 工作区：my-project'))
+  assert.equal(body.includes('✅'), false, 'no headline for completed')
+  assert.equal(body.includes('turn 3'), false, 'no turn line for completed')
+  assert.equal(body.includes('>'), false, 'no quote block for completed')
+})
+
+test('buildTurnEndBody: completed without excerpt keeps a non-empty fallback', () => {
+  const body = buildTurnEndBody({ turn: 1, reason: { kind: 'completed' } }, '', { serverName: 's' })
+  assert.ok(body.length > 0)
+  assert.ok(body.includes('任务完成'))
+})
+
+test('buildTurnEndBody: completed without any context is just the excerpt', () => {
+  const body = buildTurnEndBody({ turn: 1, reason: { kind: 'completed' } }, 'done text', undefined)
+  assert.equal(body, 'done text')
 })
 
 test('buildTurnEndBody: error kind includes provider error message', () => {

@@ -7,8 +7,20 @@
  * whole-field replacement, not deep merge). Invalid values fall back to
  * defaults; nothing here throws.
  */
+import { hostname } from 'node:os'
 
 const RELAY_URL_DEFAULT = 'http://notice.inu1255.cn/qq/send';
+
+let cachedHostname
+/** Server display name default: short hostname ("" only if the OS fails us). */
+function defaultServerName () {
+  try {
+    cachedHostname ??= hostname().replace(/\.local$/, '')
+    return cachedHostname
+  } catch {
+    return ''
+  }
+}
 
 const DEFAULTS = Object.freeze({
   enabled: true,
@@ -26,6 +38,8 @@ const DEFAULTS = Object.freeze({
    * session's turn/end error and once via the agent bus).
    */
   agentErrorDelayMs: 5_000,
+  /** Shown as a prefix line on every push; falls back to the OS hostname. */
+  serverName: defaultServerName(),
 });
 
 function asBool (value, fallback) {
@@ -79,6 +93,9 @@ export function resolveConfig (raw = {}) {
     summaryMaxChars: asIntInRange(source.summaryMaxChars, DEFAULTS.summaryMaxChars, { min: 40, max: 4000 }),
     timeoutMs: asIntInRange(source.timeoutMs, DEFAULTS.timeoutMs, { min: 1000, max: 60 * 1000 }),
     agentErrorDelayMs: asIntInRange(source.agentErrorDelayMs, DEFAULTS.agentErrorDelayMs, { min: 0, max: 60 * 1000 }),
+    serverName: typeof source.serverName === 'string' && source.serverName.trim() !== ''
+      ? source.serverName.trim()
+      : defaultServerName(),
     events: normalizeEvents(source.events),
     tool: normalizeTool(source.tool),
   })

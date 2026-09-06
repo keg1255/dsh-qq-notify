@@ -1,6 +1,6 @@
 {
   "name": "dsh-qq-notify",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DSH plugin: QQ push notifications via notice.inu1255.cn relay — approval/ask-user asks instantly, turn completion/errors with assistant excerpt, agent-callable notify tool, JSONL delivery ledger. Zero runtime dependencies.",
   "type": "module",
   "license": "MIT",

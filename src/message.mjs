@@ -51,11 +51,13 @@ export function turnEndKindLabel (kind) {
 /**
  * Build the approval/asked notification body.
  * @param data - `{ id, toolName, callId?, reason? }`
+ * @param ctxInfo - `{ serverName?, workspaceName? }` context prefix lines
  */
-export function buildApprovalBody (data) {
+export function buildApprovalBody (data, ctxInfo) {
   const tool = oneLine(data?.toolName) || '未知工具'
   const reason = oneLine(data?.reason)
   const lines = ['🔐 **需要你批准**']
+  pushContextLines(lines, ctxInfo)
   lines.push(`- 工具：\`${tool}\``)
   if (reason !== '') lines.push(`- 原因：${reason}`)
   return lines.join('\n')
@@ -64,10 +66,12 @@ export function buildApprovalBody (data) {
 /**
  * Build the ask_user (`user-questions/request`) notification body.
  * @param questions - `[{ id, question, header?, options? }]`
+ * @param ctxInfo - `{ serverName?, workspaceName? }` context prefix lines
  */
-export function buildAskUserBody (questions) {
+export function buildAskUserBody (questions, ctxInfo) {
   const list = Array.isArray(questions) ? questions : []
   const lines = ['💬 **Agent 有问题要问你**']
+  pushContextLines(lines, ctxInfo)
   for (const q of list) {
     const header = oneLine(q?.header)
     const text = oneLine(q?.question)
@@ -81,12 +85,14 @@ export function buildAskUserBody (questions) {
 /**
  * Build the agent/error notification body.
  * @param payload - `{ agent?, turn?, step?, error? }`
+ * @param ctxInfo - `{ serverName?, workspaceName? }` context prefix lines
  */
-export function buildAgentErrorBody (payload) {
+export function buildAgentErrorBody (payload, ctxInfo) {
   const error = payload?.error
   const message = oneLine(error?.message ?? error)
   const turn = Number.isFinite(payload?.turn) ? payload.turn : undefined
   const lines = ['🔥 **Agent 内部错误**']
+  pushContextLines(lines, ctxInfo)
   if (turn !== undefined) lines.push(`- 回合：turn ${turn}`)
   if (typeof error?.code === 'string' && error.code !== '') lines.push(`- 错误码：\`${error.code}\``)
   lines.push(`- 错误：${message !== '' ? clip(message, 300) : '(无错误信息)'}`)
@@ -94,16 +100,46 @@ export function buildAgentErrorBody (payload) {
 }
 
 /**
+ * Server + workspace context lines, placed directly under the headline.
+ * Each renders only when known; nothing is emitted when both are empty.
+ * @param ctxInfo - `{ serverName?, workspaceName? }`
+ */
+function pushContextLines (lines, ctxInfo) {
+  const server = oneLine(ctxInfo?.serverName)
+  const workspace = oneLine(ctxInfo?.workspaceName)
+  if (server !== '' && workspace !== '') lines.push(`- 服务器：${server} · 工作区：${workspace}`)
+  else if (server !== '') lines.push(`- 服务器：${server}`)
+  else if (workspace !== '') lines.push(`- 工作区：${workspace}`)
+}
+
+/**
  * Build the `turn/end` notification body, including the last assistant excerpt.
  * Returns `undefined` for unknown kinds so the listener can skip silently.
+ *
+ * `completed` is deliberately minimal — no headline, no turn line: just the
+ * workspace context (when known) followed by the final assistant text, plain
+ * (no quote block). Non-completed kinds keep the headline + details list.
+ *
  * @param data - `{ turn, reason: { kind } }`
  * @param excerpt - last assistant text (already clipped by the caller)
+ * @param ctxInfo - `{ serverName?, workspaceName? }` context prefix lines
  */
-export function buildTurnEndBody (data, excerpt) {
+export function buildTurnEndBody (data, excerpt, ctxInfo) {
   const kind = data?.reason?.kind
   const head = turnEndKindLabel(kind)
   if (head === undefined) return undefined
+  const summary = typeof excerpt === 'string' ? excerpt.trim() : ''
+
+  if (kind === 'completed') {
+    const lines = []
+    pushContextLines(lines, ctxInfo)
+    if (summary !== '') lines.push(summary)
+    else lines.push('（任务完成，无文本输出）')
+    return lines.join('\n')
+  }
+
   const lines = [`${head.emoji} **${head.label}**`]
+  pushContextLines(lines, ctxInfo)
   if (Number.isFinite(data?.turn)) lines.push(`- 回合：turn ${data.turn}`)
   if (kind === 'error') {
     const error = data?.reason?.error ?? {}
@@ -118,8 +154,7 @@ export function buildTurnEndBody (data, excerpt) {
     if (causeText !== '') lines.push(`- 中止原因：${causeText}`)
   }
   if (kind === 'blocked') lines.push('- 任务在等待你的输入（未完成，请回来看一眼）')
-  const summary = typeof excerpt === 'string' ? excerpt.trim() : ''
-  if (summary !== '') lines.push('', `> ${summary.replace(/\n/g, '\n> ')}`)
+  if (summary !== '') lines.push('', summary)
   return lines.join('\n')
 }
 
@@ -128,6 +163,22 @@ export function buildToolBody (message, title) {
   const t = oneLine(title)
   const m = typeof message === 'string' ? message : ''
   return t !== '' ? `📨 **${t}**\n\n${m}` : `📨 ${m}`
+}
+
+/**
+ * Workspace display name from a session: the basename of the session header's
+ * `cwd`. Unknown/missing cwd degrades to '' (line omitted).
+ * @param session - live session (uses header.cwd)
+ */
+export function workspaceNameOf (session) {
+  try {
+    const cwd = session?.header?.cwd
+    if (typeof cwd !== 'string' || cwd === '') return ''
+    const parts = cwd.split(/[/\\]/).filter(Boolean)
+    return parts.length > 0 ? parts[parts.length - 1] : ''
+  } catch {
+    return ''
+  }
 }
 
 /**

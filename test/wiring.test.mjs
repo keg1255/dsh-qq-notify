@@ -9,6 +9,7 @@ import { apply } from '../src/plugin-entry.mjs'
 import { resolveConfig } from '../src/config.mjs'
 import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { hostname } from 'node:os'
 import { join } from 'node:path'
 
 /**
@@ -164,21 +165,25 @@ test('approval/asked: pushed instantly with tool name, non-empty content', async
   cleanup()
 })
 
-test('turn/end completed: debounced, last-of-burst wins, excerpt attached', async () => {
+test('turn/end completed: debounced, last-of-burst wins, plain excerpt + server/workspace context', async () => {
   const { ctx, sends, cleanup } = await bootPlugin()
   const events = [
     assistantEvent(1, '中间消息'),
     assistantEvent(4, '最终回复：一切完成'),
   ]
   const session = fakeSession('sess-b', events)
+  session.header = { id: 'sess-b', cwd: '/opt/dsh-qq-notify' }
   ctx.emit('session/event', session, { type: 'turn/end', seq: 2, data: { turn: 1, reason: { kind: 'completed' } } })
   ctx.emit('session/event', session, { type: 'turn/end', seq: 3, data: { turn: 2, reason: { kind: 'completed' } } })
   assert.equal(sends.length, 0, 'no immediate push for completed')
   await flush()
   assert.equal(sends.length, 1, 'burst collapses into one push')
-  assert.ok(sends[0].content.includes('✅'))
   assert.ok(sends[0].content.includes('最终回复：一切完成'))
-  assert.ok(sends[0].content.includes('turn 2'))
+  assert.ok(sends[0].content.includes('工作区：dsh-qq-notify'))
+  assert.ok(sends[0].content.includes(hostname().replace(/\.local$/, '')), 'server name line present')
+  assert.equal(sends[0].content.includes('✅'), false, 'no headline for completed')
+  assert.equal(sends[0].content.includes('turn 2'), false, 'no turn line for completed')
+  assert.equal(sends[0].content.includes('>'), false, 'no quote block')
   cleanup()
 })
 
@@ -373,13 +378,13 @@ test('hostile session shapes never crash the pipeline', async () => {
   const { ctx, sends, cleanup } = await bootPlugin()
   ctx.emit('session/event', undefined, undefined)
   // snapshotEvents throwing degrades the excerpt to '' but the completed push
-  // still goes out with its headline (content non-empty invariant).
-  ctx.emit('session/event', { id: 'sess-k', snapshotEvents: () => { throw new Error('nope') } }, { type: 'turn/end', seq: 1, data: { turn: 1, reason: { kind: 'completed' } } })
+  // still goes out with its fallback text (content non-empty invariant).
+  ctx.emit('session/event', { id: 'sess-k', header: { id: 'sess-k' }, snapshotEvents: () => { throw new Error('nope') } }, { type: 'turn/end', seq: 1, data: { turn: 1, reason: { kind: 'completed' } } })
   ctx.emit('session/event', fakeSession('sess-j', []), { type: 'turn/end', seq: 2 }) // missing data entirely
   ctx.emit('session/event', fakeSession('sess-j', []), { type: 'compaction/start', seq: 3, data: {} })
   await flush()
-  assert.equal(sends.length, 1, 'only the completed turn pushes (headline fallback)')
+  assert.equal(sends.length, 1, 'only the completed turn pushes (fallback text)')
   assert.ok(sends[0].content.length > 0)
-  assert.ok(sends[0].content.includes('✅'))
+  assert.ok(sends[0].content.includes('任务完成'), 'completed fallback line present')
   cleanup()
 })
