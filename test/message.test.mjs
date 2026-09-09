@@ -116,8 +116,24 @@ test('buildTurnEndBody: unknown kind returns undefined', () => {
 })
 
 test('buildTurnEndBody: missing excerpt still produces a body', () => {
-  const body = buildTurnEndBody({ turn: 1, reason: { kind: 'aborted', reason: 'user' } }, '')
+  const body = buildTurnEndBody({ turn: 1, reason: { kind: 'aborted', reason: 'timeout' } }, '')
   assert.ok(body.includes('⏹'))
+})
+
+test('buildTurnEndBody: user-initiated abort returns undefined (no push)', () => {
+  assert.equal(buildTurnEndBody({ turn: 1, reason: { kind: 'aborted', reason: 'user' } }, ''), undefined)
+  assert.equal(buildTurnEndBody({ turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } }, ''), undefined)
+})
+
+test('buildTurnEndBody: non-user aborts still push with the cause line', () => {
+  const stringCause = buildTurnEndBody({ turn: 1, reason: { kind: 'aborted', reason: 'tool-denied' } }, '')
+  assert.ok(stringCause.includes('⏹'))
+  assert.ok(stringCause.includes('中止原因：tool-denied'))
+  const objectCause = buildTurnEndBody({ turn: 1, reason: { kind: 'aborted', reason: { kind: 'guardrail' } } }, '')
+  assert.ok(objectCause.includes('中止原因：guardrail'))
+  const missingCause = buildTurnEndBody({ turn: 1, reason: { kind: 'aborted' } }, '')
+  assert.ok(missingCause.includes('⏹'), 'aborted without a cause still notifies')
+  assert.equal(missingCause.includes('中止原因'), false)
 })
 
 // ---- approval / ask-user / agent-error -------------------------------------

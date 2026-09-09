@@ -113,12 +113,27 @@ function pushContextLines (lines, ctxInfo) {
 }
 
 /**
+ * Normalize a `turn/end` aborted cause: `reason.reason` is either a string or
+ * an object `{ kind }`; anything else degrades to ''.
+ * @param data - `{ turn, reason: { kind, reason? } }`
+ */
+export function abortCauseOf (data) {
+  const cause = data?.reason?.reason
+  const text = oneLine(typeof cause === 'object' && cause !== null ? cause.kind : cause)
+  return text
+}
+
+/**
  * Build the `turn/end` notification body, including the last assistant excerpt.
  * Returns `undefined` for unknown kinds so the listener can skip silently.
  *
  * `completed` is deliberately minimal — no headline, no turn line: just the
  * workspace context (when known) followed by the final assistant text, plain
  * (no quote block). Non-completed kinds keep the headline + details list.
+ *
+ * A **user-initiated abort** (`kind: 'aborted'`, cause `user`) also returns
+ * `undefined`: the person who pressed stop is the person holding the phone —
+ * the push would be pure noise.
  *
  * @param data - `{ turn, reason: { kind } }`
  * @param excerpt - last assistant text (already clipped by the caller)
@@ -128,6 +143,7 @@ export function buildTurnEndBody (data, excerpt, ctxInfo) {
   const kind = data?.reason?.kind
   const head = turnEndKindLabel(kind)
   if (head === undefined) return undefined
+  if (kind === 'aborted' && abortCauseOf(data) === 'user') return undefined
   const summary = typeof excerpt === 'string' ? excerpt.trim() : ''
 
   if (kind === 'completed') {
@@ -149,8 +165,7 @@ export function buildTurnEndBody (data, excerpt, ctxInfo) {
     else if (typeof error.code !== 'string') lines.push('- 错误：(无错误信息)')
   }
   if (kind === 'aborted') {
-    const cause = data?.reason?.reason
-    const causeText = oneLine(typeof cause === 'object' && cause !== null ? cause.kind : cause)
+    const causeText = abortCauseOf(data)
     if (causeText !== '') lines.push(`- 中止原因：${causeText}`)
   }
   if (kind === 'blocked') lines.push('- 任务在等待你的输入（未完成，请回来看一眼）')

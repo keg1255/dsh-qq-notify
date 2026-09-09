@@ -190,11 +190,29 @@ test('turn/end completed: debounced, last-of-burst wins, plain excerpt + server/
 test('turn/end: non-completed kinds push instantly with mapped text', async () => {
   const { ctx, sends, cleanup } = await bootPlugin({ config: { agentErrorDelayMs: 0 } })
   const session = fakeSession('sess-c', [])
-  ctx.emit('session/event', session, { type: 'turn/end', seq: 1, data: { turn: 1, reason: { kind: 'aborted', reason: 'user' } } })
+  ctx.emit('session/event', session, { type: 'turn/end', seq: 1, data: { turn: 1, reason: { kind: 'aborted', reason: 'timeout' } } })
   await flush()
   assert.equal(sends.length, 1)
   assert.ok(sends[0].content.includes('⏹'))
   assert.ok(sends[0].content.includes('已中止'))
+  cleanup()
+})
+
+test('turn/end: user-initiated abort is NOT pushed', async () => {
+  const { ctx, sends, cleanup } = await bootPlugin()
+  const session = fakeSession('sess-abort-user', [])
+  ctx.emit('session/event', session, { type: 'turn/end', seq: 1, data: { turn: 1, reason: { kind: 'aborted', reason: 'user' } } })
+  await flush()
+  assert.equal(sends.length, 0, 'the user pressed stop themselves — no push')
+  cleanup()
+})
+
+test('turn/end: user abort as { kind: "user" } object is NOT pushed either', async () => {
+  const { ctx, sends, cleanup } = await bootPlugin()
+  const session = fakeSession('sess-abort-user-obj', [])
+  ctx.emit('session/event', session, { type: 'turn/end', seq: 1, data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } })
+  await flush()
+  assert.equal(sends.length, 0, 'object-shaped cause normalizes to the same suppression')
   cleanup()
 })
 
@@ -236,7 +254,7 @@ test('turn/end: non-completed push is deduped by session.id:seq', async () => {
 
 test('turn/end: different sessions do not collide in dedup', async () => {
   const { ctx, sends, cleanup } = await bootPlugin()
-  const event = { type: 'turn/end', seq: 7, data: { turn: 1, reason: { kind: 'aborted', reason: 'user' } } }
+  const event = { type: 'turn/end', seq: 7, data: { turn: 1, reason: { kind: 'aborted', reason: 'timeout' } } }
   ctx.emit('session/event', fakeSession('sess-x', []), event)
   ctx.emit('session/event', fakeSession('sess-y', []), event)
   await flush()
@@ -304,9 +322,9 @@ test('agent/error dedup: non-error turn ends do NOT cancel the pending push', as
   const { ctx, sends, cleanup } = await bootPlugin({ config: { agentErrorDelayMs: 5 } })
   const session = fakeSession('sess-keep', [])
   ctx.emit('agent/error', { agent: { session }, turn: 2, error: { message: 'dangling failure' } })
-  ctx.emit('session/event', session, { type: 'turn/end', seq: 1, data: { turn: 2, reason: { kind: 'aborted', reason: { kind: 'user' } } } })
+  ctx.emit('session/event', session, { type: 'turn/end', seq: 1, data: { turn: 2, reason: { kind: 'aborted', reason: { kind: 'tool-denied' } } } })
   await new Promise((resolve) => setTimeout(resolve, 40))
-  assert.equal(sends.length, 2, 'aborted push + delayed agent-error push both delivered')
+  assert.equal(sends.length, 2, 'non-user aborted push + delayed agent-error push both delivered')
   cleanup()
 })
 

@@ -6,6 +6,7 @@
  *   - user-questions/request → instant "💬 Agent 有问题要问你" (observer, next() passthrough)
  *   - turn/end (completed)  → debounced "✅ 任务完成" + assistant excerpt
  *   - turn/end (other kinds)→ instant "❌/⛔/⏹/…"
+ *   - turn/end aborted by the user themselves → NOT pushed (they pressed stop)
  *   - agent/error           → instant "🔥 Agent 内部错误"
  *
  * Hard rules (learned from the dsh-notifier postmortem, all re-verified on
@@ -134,8 +135,9 @@ export async function apply (ctx, rawConfig) {
           })
           return
         }
-        // Non-completed kinds push instantly; unknown kinds never arrive here
-        // because buildTurnEndBody maps them to undefined and we skip first.
+        // Non-completed kinds push instantly; unknown kinds and user-initiated
+        // aborts never arrive here because buildTurnEndBody maps them to
+        // undefined and we skip first.
         if (kind === undefined || kind === null) return
         const body = buildTurnEndBody(data, '', ctxInfoFor(session))
         if (body === undefined) return // unknown kind: silently ignored

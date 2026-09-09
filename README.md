@@ -10,7 +10,7 @@ DSH 插件：通过自建 QQ 推送中继站（`notice.inu1255.cn/qq/send`）推
 | `user-questions/request`（ask_user 瀑布） | **立即推送**，严格旁路观察（`return next()`，绝不吞掉问答流） | 💬 Agent 有问题要问你 |
 | `turn/end` `completed` | **10 秒尾沿防抖**：同一 session 连续完成只推最后一条。正文极简：`服务器 · 工作区` 上下文行 + 最后一条助手消息原文（≤500 字符，纯文本无引用块） | （无标题，直接看内容） |
 | `turn/end` `error`（接口出错中断任务） | **立即推送**，含错误码 + provider 错误信息（如 `SERVER: OpenAI API error (500)`） | ❌ 任务出错 |
-| `turn/end` 其他 kind（blocked/aborted/max-tokens/interrupted） | **立即推送**；未知 kind 静默忽略 | ⛔ 任务受阻（提示等待输入）/ ⏹ 已中止（含中止原因）/ 🔢 达到 token 上限 / ⏸ 已被打断 |
+| `turn/end` 其他 kind（blocked/aborted/max-tokens/interrupted） | **立即推送**；未知 kind 静默忽略；**用户自己中止（`aborted` + 中止原因 `user`）不推送**——自己按的停止，不用再通知自己 | ⛔ 任务受阻（提示等待输入）/ ⏹ 已中止（含中止原因）/ 🔢 达到 token 上限 / ⏸ 已被打断 |
 | `agent/error`（总线事件） | **延迟 5 秒推送**（`agentErrorDelayMs`）；同一 session 的 `turn/end error` 先到则取消 —— 一次接口故障只收一条通知 | 🔥 Agent 内部错误 |
 
 所有推送都带**上下文行**：`- 服务器：<serverName> · 工作区：<workspaceName>`（工作区取 session `header.cwd` 的 basename，未知时省略对应部分；completed 的上下文行在最前，其余类型在标题下方）。
@@ -79,7 +79,7 @@ DSH 插件：通过自建 QQ 推送中继站（`notice.inu1255.cn/qq/send`）推
 ## 开发
 
 ```bash
-node --test "test/*.test.mjs"   # 71 tests
+node --test "test/*.test.mjs"   # 82 tests
 ```
 
 零运行时第三方依赖（只用 `fetch` / `node:*` 内置能力 + 宿主 `@deepseek-ai/dsh-tools` 的动态可选导入，导入失败自动退化为等价的裸 JSON-Schema 工具定义）。纯 ESM，Node 22+。
