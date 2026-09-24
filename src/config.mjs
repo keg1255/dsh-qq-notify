@@ -8,6 +8,7 @@
  * defaults; nothing here throws.
  */
 import { hostname } from 'node:os'
+import { normalizeOpenidList } from './targets.mjs'
 
 const RELAY_URL_DEFAULT = 'http://notice.inu1255.cn/qq/send';
 
@@ -26,6 +27,8 @@ const DEFAULTS = Object.freeze({
   enabled: true,
   url: RELAY_URL_DEFAULT,
   openid: '',
+  openids: Object.freeze([]),
+  projectOpenids: true,
   debounceMs: 10_000,
   summaryMaxChars: 500,
   timeoutMs: 10_000,
@@ -84,11 +87,24 @@ function normalizeTool (raw) {
 export function resolveConfig (raw = {}) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
   const url = typeof source.url === 'string' && source.url.trim() !== '' ? source.url.trim() : DEFAULTS.url
-  const openid = typeof source.openid === 'string' ? source.openid.trim() : ''
+  /**
+   * Targets accept `openid: 'A'`, `openid: ['A','B']` and the `openids: [...]`
+   * alias; both keys are merged and de-duplicated so an old single-string
+   * config keeps working unchanged.
+   */
+  const openids = normalizeOpenidList([
+    ...(Array.isArray(source.openids) ? source.openids : [source.openids]),
+    ...(Array.isArray(source.openid) ? source.openid : [source.openid]),
+  ])
   return Object.freeze({
     enabled: asBool(source.enabled, DEFAULTS.enabled),
     url,
-    openid,
+    /** First configured target — kept for back-compat with single-openid callers. */
+    openid: openids[0] ?? '',
+    /** Every configured target, in order. */
+    openids: Object.freeze(openids),
+    /** Whether `<workspace>/.dsh-qq-notify-openids` is merged in per push. */
+    projectOpenids: asBool(source.projectOpenids, DEFAULTS.projectOpenids),
     debounceMs: asIntInRange(source.debounceMs, DEFAULTS.debounceMs, { min: 0, max: 10 * 60 * 1000 }),
     summaryMaxChars: asIntInRange(source.summaryMaxChars, DEFAULTS.summaryMaxChars, { min: 40, max: 4000 }),
     timeoutMs: asIntInRange(source.timeoutMs, DEFAULTS.timeoutMs, { min: 1000, max: 60 * 1000 }),

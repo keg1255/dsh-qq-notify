@@ -70,7 +70,7 @@ function buildRawDefinition (execute) {
 
 /**
  * Create the tool definition.
- * @param push - async `(content) => sendResult` bound to the dispatcher
+ * @param push - async `(content, session) => sendResult` bound to the dispatcher
  * @param limiter - SlidingWindowLimiter instance
  * @param ctxInfo - `{ serverName?, workspaceName? }` prepended as a context line
  * @returns registry-ready definition (defineTool-wrapped when available)
@@ -84,7 +84,8 @@ export async function createNotifyTool (push, limiter, ctxInfo) {
       return { delivered: false, detail: `rate limited; retry in ${seconds}s` }
     }
     // Workspace resolved per call from the calling agent's session when known.
-    const workspaceName = workspaceNameOf(exec?.agent?.session)
+    const session = exec?.agent?.session
+    const workspaceName = workspaceNameOf(session)
     let line = ''
     if (server !== '' && workspaceName !== '') line = `- 服务器：${server} · 工作区：${workspaceName}`
     else if (server !== '') line = `- 服务器：${server}`
@@ -94,10 +95,18 @@ export async function createNotifyTool (push, limiter, ctxInfo) {
       line !== '' ? raw.replace('\n\n', `\n${line}\n\n`) : raw,
       TOOL_NAME,
     )
-    const result = await push(content)
-    return result.ok === true
-      ? { delivered: true }
-      : { delivered: false, detail: result.error ?? 'unknown error' }
+    const result = await push(content, session)
+    // Fan-out: `delivered`/`total` come from the multi-target dispatcher; the
+    // `ok`/`error` fallbacks keep plain single-target senders working.
+    const total = Number.isFinite(result?.total) ? result.total : 1
+    const delivered = Number.isFinite(result?.delivered)
+      ? result.delivered
+      : (result?.ok === true ? 1 : 0)
+    if (delivered > 0 && delivered < total) {
+      return { delivered: true, detail: `delivered to ${delivered}/${total} targets` }
+    }
+    if (delivered > 0) return { delivered: true }
+    return { delivered: false, detail: result?.error ?? result?.failures?.[0]?.error ?? 'unknown error' }
   }
   try {
     const { defineTool } = await import('@deepseek-ai/dsh-tools')

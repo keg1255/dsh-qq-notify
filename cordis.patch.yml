@@ -4,12 +4,15 @@
 # layer (~/.dsh/profiles/web/cordis.patch.yml, field-level whole replacement).
 #
 # openid is intentionally NOT shipped: your QQ push identity belongs in your
-# own user layer only. With an empty openid the plugin loads passively (it
-# warns on console.error and never sends) until you configure one:
+# own user layer only. With no openid the plugin loads passively (it warns on
+# console.error and never sends) until you configure one or more:
 #
 #   - id: dsh-qq-notify
 #     config:
-#       openid: '<your openid>'
+#       openid: '<your openid>'          # every configured target is pushed to
+#       # openid: ['<id1>', '<id2>']
+#       # openids: ['<id3>']             # alias; merges with openid
+#       # projectOpenids: true           # also read <workspace>/.dsh-qq-notify-openids
 - insert:
     - id: dsh-qq-notify
       name: 'dsh-qq-notify'
@@ -17,6 +20,7 @@
         enabled: true
         url: 'http://notice.inu1255.cn/qq/send'
         openid: ''
+        projectOpenids: true
         debounceMs: 10000
         summaryMaxChars: 500
         events:

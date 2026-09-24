@@ -153,6 +153,118 @@ test('Dispatcher: ledger write failure does not break the push', async () => {
   assert.equal(result.ok, true)
 })
 
+// ---- Dispatcher fan-out --------------------------------------------------------
+
+test('Dispatcher: push fans out to every configured openid with one ledger line each', async () => {
+  const sends = []
+  const path = tempLedgerPath()
+  const dispatcher = new Dispatcher(
+    resolveConfig({ openid: ['A', 'B'] }),
+    async (payload) => {
+      sends.push(payload)
+      return { ok: true, id: `id-${payload.openid}`, attempts: 1, failures: [] }
+    },
+    createLedger(path),
+  )
+  const result = await dispatcher.push('tool', 'hello')
+  assert.deepEqual(sends.map((s) => s.openid), ['A', 'B'])
+  assert.equal(result.ok, true)
+  assert.equal(result.delivered, 2)
+  assert.equal(result.total, 2)
+  const lines = readFileSync(path, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+  assert.deepEqual(lines.map((l) => l.openid), ['A', 'B'])
+  assert.deepEqual(lines.map((l) => l.relayId), ['id-A', 'id-B'])
+})
+
+test('Dispatcher: partial failure keeps ok=false but reports per-target detail', async () => {
+  const path = tempLedgerPath()
+  const dispatcher = new Dispatcher(
+    resolveConfig({ openid: ['GOOD', 'BAD'] }),
+    async (payload) => (payload.openid === 'BAD'
+      ? { ok: false, error: 'invalid openid', httpStatus: 400 }
+      : { ok: true, id: 'ok', attempts: 1, failures: [] }),
+    createLedger(path),
+  )
+  const result = await dispatcher.push('tool', 'hi')
+  assert.equal(result.ok, false)
+  assert.equal(result.delivered, 1)
+  assert.equal(result.total, 2)
+  assert.match(result.error, /1\/2/)
+  assert.deepEqual(result.failures.map((f) => f.openid), ['BAD'])
+})
+
+test('Dispatcher: single-target summary keeps the legacy ok/id/error shape', async () => {
+  const dispatcher = new Dispatcher(
+    resolveConfig({ openid: 'ONLY' }),
+    async () => ({ ok: true, id: 'R1', attempts: 1, failures: [] }),
+    createLedger(''),
+  )
+  const result = await dispatcher.push('tool', 'hi')
+  assert.equal(result.ok, true)
+  assert.equal(result.id, 'R1')
+  assert.equal(result.total, 1)
+})
+
+test('Dispatcher: extra targets merge in and dedupe against config targets', async () => {
+  const sends = []
+  const dispatcher = new Dispatcher(
+    resolveConfig({ openid: 'CONF' }),
+    async (payload) => {
+      sends.push(payload.openid)
+      return { ok: true, attempts: 1, failures: [] }
+    },
+    createLedger(''),
+    () => ['CONF', 'EXTRA'],
+  )
+  await dispatcher.push('tool', 'hi')
+  assert.deepEqual(sends, ['CONF', 'EXTRA'])
+})
+
+test('Dispatcher: a throwing extra-target resolver degrades to config targets only', async () => {
+  const sends = []
+  const dispatcher = new Dispatcher(
+    resolveConfig({ openid: 'CONF' }),
+    async (payload) => {
+      sends.push(payload.openid)
+      return { ok: true, attempts: 1, failures: [] }
+    },
+    createLedger(''),
+    () => { throw new Error('cwd exploded') },
+  )
+  const result = await dispatcher.push('tool', 'hi')
+  assert.deepEqual(sends, ['CONF'])
+  assert.equal(result.ok, true)
+})
+
+test('Dispatcher: explicit targets override the resolved list', async () => {
+  const sends = []
+  const dispatcher = new Dispatcher(
+    resolveConfig({ openid: 'CONF' }),
+    async (payload) => {
+      sends.push(payload.openid)
+      return { ok: true, attempts: 1, failures: [] }
+    },
+    createLedger(''),
+  )
+  await dispatcher.push('tool', 'hi', undefined, undefined, ['JUST-THIS'])
+  assert.deepEqual(sends, ['JUST-THIS'])
+})
+
+test('Dispatcher: zero targets still sends once without openid (relay default)', async () => {
+  const sends = []
+  const dispatcher = new Dispatcher(
+    resolveConfig({ openid: [] }),
+    async (payload) => {
+      sends.push(payload)
+      return { ok: true, attempts: 1, failures: [] }
+    },
+    createLedger(''),
+  )
+  await dispatcher.push('tool', 'hi')
+  assert.equal(sends.length, 1)
+  assert.equal('openid' in sends[0], false)
+})
+
 // ---- relay (real HTTP against a local server) ---------------------------------
 
 test('sendToRelay: success parses relay ok+id', async () => {
@@ -345,4 +457,32 @@ test('notify tool: send failure surfaces detail to the agent', async () => {
   const value = await tool.execute({ message: 'x' }, {})
   assert.equal(value.delivered, false)
   assert.equal(value.detail, 'HTTP 500')
+})
+
+test('notify tool: partial fan-out reports how many targets got it', async () => {
+  const tool = await createNotifyTool(
+    async () => ({ ok: false, delivered: 1, total: 3, failures: [{ channel: 'qq-relay', openid: 'B', error: 'boom' }] }),
+    new SlidingWindowLimiter(10),
+  )
+  const value = await tool.execute({ message: 'x' }, {})
+  assert.equal(value.delivered, true, 'at least one target received it → not a failure')
+  assert.match(value.detail, /1\/3/)
+})
+
+test('notify tool: full fan-out success carries no detail', async () => {
+  const tool = await createNotifyTool(
+    async () => ({ ok: true, delivered: 2, total: 2, failures: [] }),
+    new SlidingWindowLimiter(10),
+  )
+  assert.deepEqual(await tool.execute({ message: 'x' }, {}), { delivered: true })
+})
+
+test('notify tool: total failure falls back to the first target error', async () => {
+  const tool = await createNotifyTool(
+    async () => ({ ok: false, delivered: 0, total: 2, failures: [{ channel: 'qq-relay', openid: 'A', error: 'nope' }] }),
+    new SlidingWindowLimiter(10),
+  )
+  const value = await tool.execute({ message: 'x' }, {})
+  assert.equal(value.delivered, false)
+  assert.equal(value.detail, 'nope')
 })

@@ -84,6 +84,31 @@ test('resolveConfig: string booleans and numeric strings are tolerated', () => {
   assert.equal(config.debounceMs, 2000)
 })
 
+test('resolveConfig: openid accepts a list; openids alias merges and dedupes', () => {
+  const single = resolveConfig({ openid: 'A' })
+  assert.equal(single.openid, 'A')
+  assert.deepEqual(single.openids, ['A'])
+
+  const list = resolveConfig({ openid: ['A', 'B', 'A'] })
+  assert.equal(list.openid, 'A', 'openid stays the first target for back-compat')
+  assert.deepEqual(list.openids, ['A', 'B'])
+
+  const alias = resolveConfig({ openid: 'A', openids: ['B', 'A'] })
+  assert.deepEqual(alias.openids, ['B', 'A'], 'openids alias precedes openid')
+
+  const scalar = resolveConfig({ openid: 'A, B; C' })
+  assert.deepEqual(scalar.openids, ['A', 'B', 'C'], 'separator-laden scalar splits')
+
+  const none = resolveConfig({})
+  assert.equal(none.openid, '')
+  assert.deepEqual(none.openids, [])
+  assert.equal(none.projectOpenids, true)
+  assert.equal(resolveConfig({ projectOpenids: false }).projectOpenids, false)
+
+  const junk = resolveConfig({ openid: 12345, openids: 'X' })
+  assert.deepEqual(junk.openids, ['X'])
+})
+
 test('resolveConfig: result is frozen (accidental mutation throws in strict mode)', () => {
   const config = resolveConfig({})
   assert.throws(() => {
@@ -93,5 +118,9 @@ test('resolveConfig: result is frozen (accidental mutation throws in strict mode
   assert.throws(() => {
     'use strict'
     config.events.turnEnd = false
+  })
+  assert.throws(() => {
+    'use strict'
+    config.openids.push('X')
   })
 })

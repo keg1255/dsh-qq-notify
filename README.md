@@ -15,11 +15,32 @@ DSH 插件：通过自建 QQ 推送中继站（`notice.inu1255.cn/qq/send`）推
 
 所有推送都带**上下文行**：`- 服务器：<serverName> · 工作区：<workspaceName>`（工作区取 session `header.cwd` 的 basename，未知时省略对应部分；completed 的上下文行在最前，其余类型在标题下方）。
 
-助手摘录取法：`session.snapshotEvents()` 从尾倒序找最后一条 `assistant/message`，取 `data.message.content` 中 `type === 'text'` 块的 text 拼接（避开 reasoning/tool-call 块）。
+## 多 openid 推送
+
+一次事件会**扇出**给所有目标，每个 openid 各发一次 POST、各记一行账本；某个目标失败（例如对方没加机器人）不会影响其他目标。目标来源按顺序合并去重：
+
+1. **profile 配置**：`openid` 支持字符串、数组，或 `openids` 别名，三者配置的都会发送。字符串里的空格/逗号/分号也会拆开，所以 `openid: 'A, B'` 等同于列表。
+2. **工作区文件**：`<session.header.cwd>/.dsh-qq-notify-openids`，一行一个 openid，`#` 开头为注释，支持 `openid: xxx` / `openid=xxx` 前缀写法。每次推送时按当前 session 的工作区读取，可为不同项目追加不同的额外接收人。用 `projectOpenids: false` 关闭。
+
+```bash
+# /opt/my-project/.dsh-qq-notify-openids
+# 额外接收人：一行一个
+172176AF86F5FE04632B4AEFE0912919
+openid: ABCDEF0123456789
+```
+
+目标全部失败才算推送失败；部分成功时 `notify` 工具会返回 `delivered: true, detail: "delivered to N/M targets"`，账本中每个目标一行并带 `openid` 字段（失败的还带 `failed[].openid`）。
+
+注意两点：
+
+- **profile 里至少要有一个 openid**，插件才会加载并订阅事件；工作区文件是在此基础上**追加额外接收人**，不能单独使用。
+- 扇出是逐目标顺序 POST（便于遵守平台频控），`notify` 工具的限流按**调用次数**计，一次调用推给 N 个目标只消耗 1 次配额。
+
+> 中继站 `/qq/send` 本身是单目标接口，扇出由插件完成，因此任何中继站版本都不用改动。
 
 ## notify 工具（agent 可调用）
 
-参数 `{ message, title? }`，走同一发送链路，滑动窗口限流（默认 10 次/分钟）。超限返回 `delivered: false, detail: "rate limited; retry in Ns"`，不会排队。
+参数 `{ message, title? }`，走同一发送链路（推给全部目标），滑动窗口限流（默认 10 次/分钟）。超限返回 `delivered: false, detail: "rate limited; retry in Ns"`，不会排队。
 
 ## 配置
 
@@ -31,6 +52,7 @@ DSH 插件：通过自建 QQ 推送中继站（`notice.inu1255.cn/qq/send`）推
     enabled: true
     url: 'http://notice.inu1255.cn/qq/send'
     openid: '<your openid>'
+    projectOpenids: true
     debounceMs: 10000
     summaryMaxChars: 500
     events:
@@ -47,7 +69,9 @@ DSH 插件：通过自建 QQ 推送中继站（`notice.inu1255.cn/qq/send`）推
 | --- | --- | --- |
 | `enabled` | `true` | `false` 时插件完全不订阅、不注册工具 |
 | `url` | `http://notice.inu1255.cn/qq/send` | 中继站地址 |
-| `openid` | `''` | 为空时插件保持被动（不崩溃，只打 console.error） |
+| `openid` | `''` | 推送目标，**支持字符串或数组**（数组则全部发送）；全部为空时插件保持被动（不崩溃，只打 console.error） |
+| `openids` | `[]` | `openid` 的别名，与 `openid` 合并去重；两个字段配置的目标都会发送 |
+| `projectOpenids` | `true` | 是否把工作区 `.dsh-qq-notify-openids` 里的额外 openid 合并进目标列表 |
 | `debounceMs` | `10000` | completed 尾沿防抖窗口 |
 | `summaryMaxChars` | `500` | 摘录最大字符数 |
 | `timeoutMs` | `10000` | 单次 POST 超时（5xx/网络错误自动重试 1 次） |
@@ -79,7 +103,7 @@ DSH 插件：通过自建 QQ 推送中继站（`notice.inu1255.cn/qq/send`）推
 ## 开发
 
 ```bash
-node --test "test/*.test.mjs"   # 82 tests
+node --test "test/*.test.mjs"   # 107 tests
 ```
 
 零运行时第三方依赖（只用 `fetch` / `node:*` 内置能力 + 宿主 `@deepseek-ai/dsh-tools` 的动态可选导入，导入失败自动退化为等价的裸 JSON-Schema 工具定义）。纯 ESM，Node 22+。
@@ -101,12 +125,16 @@ dsh plugin --profile web add /path/to/dsh-qq-notify-0.1.0.tgz
 
 ### 配置 openid（必做）
 
-`openid` 不随包分发。安装后在 `~/.dsh/profiles/web/cordis.patch.yml` 追加同 id 覆盖：
+`openid` 不随包分发。安装后在 `~/.dsh/profiles/web/cordis.patch.yml` 追加同 id 覆盖；**写几个就全部发送**：
 
 ```yaml
 - id: dsh-qq-notify
   config:
-    openid: '<your openid>'
+    openid:                  # 字符串或数组都可以
+      - '<openid 1>'
+      - '<openid 2>'
 ```
 
-未配置 openid 时插件被动加载（console.error 警告、不发送、不影响宿主）。
+只想给某些项目加人时，不用动 profile：在项目根目录放 `.dsh-qq-notify-openids`，一行一个 openid 即可。
+
+未配置任何 openid 时插件被动加载（console.error 警告、不发送、不影响宿主）。

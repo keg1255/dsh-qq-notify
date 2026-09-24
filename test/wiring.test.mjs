@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { apply } from '../src/plugin-entry.mjs'
 import { resolveConfig } from '../src/config.mjs'
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
@@ -78,8 +78,11 @@ async function bootPlugin ({ config = {}, sendImpl, ctxOptions } = {}) {
     ...config,
     url: 'http://127.0.0.1:1/qq/send', // never actually reached: fetch is mocked
     debounceMs: config.debounceMs ?? 0,
+    // Hermetic by default: never read a real `<cwd>/.dsh-qq-notify-openids`
+    // from whatever directory the test suite happens to run in.
+    projectOpenids: config.projectOpenids ?? false,
   }
-  if (config.openid === undefined) bootConfig.openid = 'OID-TEST'
+  if (config.openid === undefined && config.openids === undefined) bootConfig.openid = 'OID-TEST'
 
   // Install the fetch mock + DSH_HOME redirect for the whole test lifetime;
   // cleanup() restores both.
@@ -390,6 +393,122 @@ test('config wiring: events.turnEnd=false silences turn pushes but keeps approva
   assert.equal(sends.length, 1)
   assert.ok(sends[0].content.includes('🔐'))
   cleanup()
+})
+
+test('multi-openid: one push fans out to every configured target', async () => {
+  const { ctx, sends, readLedger, cleanup } = await bootPlugin({
+    config: { openid: ['OID-A', 'OID-B', 'OID-A'] }, // duplicate collapses
+  })
+  const session = fakeSession('sess-multi', [])
+  ctx.emit('session/event', session, {
+    type: 'approval/asked',
+    seq: 1,
+    data: { id: 'r-multi', toolName: 'bash' },
+  })
+  await flush()
+  assert.equal(sends.length, 2, 'one POST per distinct openid')
+  assert.deepEqual(sends.map((s) => s.openid).sort(), ['OID-A', 'OID-B'])
+  assert.equal(sends[0].content, sends[1].content, 'same body to every target')
+  const lines = readLedger()
+  assert.equal(lines.length, 2, 'one ledger line per target')
+  assert.deepEqual(lines.map((l) => l.openid).sort(), ['OID-A', 'OID-B'])
+  assert.ok(lines.every((l) => l.delivered === true))
+  cleanup()
+})
+
+test('multi-openid: a failing target does not stop the others (partial delivery)', async () => {
+  const attempted = []
+  const { ctx, readLedger, cleanup } = await bootPlugin({
+    config: { openid: ['GOOD', 'BAD'] },
+    sendImpl: async (payload) => {
+      attempted.push(payload.openid)
+      return payload.openid === 'BAD'
+        ? { ok: false, error: 'target not found', httpStatus: 400 }
+        : { ok: true, id: `id-${payload.openid}`, attempts: 1, failures: [] }
+    },
+  })
+  ctx.emit('session/event', fakeSession('sess-partial', []), {
+    type: 'approval/asked',
+    seq: 1,
+    data: { id: 'r-partial', toolName: 'edit' },
+  })
+  await flush()
+  assert.deepEqual(attempted.sort(), ['BAD', 'GOOD'], 'both targets attempted')
+  const lines = readLedger()
+  assert.equal(lines.length, 2)
+  const byTarget = Object.fromEntries(lines.map((l) => [l.openid, l]))
+  assert.equal(byTarget.GOOD.delivered, true)
+  assert.equal(byTarget.BAD.delivered, false)
+  assert.match(byTarget.BAD.failed[0].error, /target not found/)
+  assert.equal(byTarget.BAD.failed[0].openid, 'BAD', 'failure carries its target')
+  cleanup()
+})
+
+test('multi-openid: openids alias merges with openid and tolerates a comma scalar', async () => {
+  const { ctx, sends, cleanup } = await bootPlugin({
+    config: { openid: 'A, B', openids: ['C'] },
+  })
+  ctx.emit('session/event', fakeSession('sess-alias', []), {
+    type: 'approval/asked',
+    seq: 1,
+    data: { id: 'r-alias', toolName: 'bash' },
+  })
+  await flush()
+  assert.deepEqual(sends.map((s) => s.openid).sort(), ['A', 'B', 'C'])
+  cleanup()
+})
+
+test('project file: .dsh-qq-notify-openids is merged into the target list', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'qqn-proj-'))
+  writeFileSync(join(dir, '.dsh-qq-notify-openids'), [
+    '# 额外接收人',
+    '',
+    'PROJ-1',
+    'openid: PROJ-2',
+    'PROJ-1', // duplicate
+    'CONF', // duplicate of the config target
+  ].join('\n'))
+  const { ctx, sends, cleanup } = await bootPlugin({
+    config: { openid: 'CONF', projectOpenids: true },
+  })
+  const session = fakeSession('sess-proj', [])
+  session.header = { id: 'sess-proj', cwd: dir }
+  ctx.emit('session/event', session, {
+    type: 'approval/asked',
+    seq: 1,
+    data: { id: 'r-proj', toolName: 'bash' },
+  })
+  await flush()
+  assert.deepEqual(sends.map((s) => s.openid), ['CONF', 'PROJ-1', 'PROJ-2'])
+  cleanup()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('project file: missing file and unknown cwd simply contribute nothing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'qqn-empty-'))
+  const { ctx, sends, cleanup } = await bootPlugin({ config: { openid: 'ONLY', projectOpenids: true } })
+  const session = fakeSession('sess-nofile', [])
+  session.header = { id: 'sess-nofile', cwd: dir }
+  ctx.emit('session/event', session, { type: 'approval/asked', seq: 1, data: { id: 'r1', toolName: 'bash' } })
+  ctx.emit('session/event', fakeSession('sess-nocwd', []), { type: 'approval/asked', seq: 2, data: { id: 'r2', toolName: 'bash' } })
+  await flush()
+  assert.equal(sends.length, 2)
+  assert.ok(sends.every((s) => s.openid === 'ONLY'))
+  cleanup()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('project file: projectOpenids=false ignores the file entirely', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'qqn-off-'))
+  writeFileSync(join(dir, '.dsh-qq-notify-openids'), 'PROJ-X\n')
+  const { ctx, sends, cleanup } = await bootPlugin({ config: { openid: 'CONF', projectOpenids: false } })
+  const session = fakeSession('sess-off', [])
+  session.header = { id: 'sess-off', cwd: dir }
+  ctx.emit('session/event', session, { type: 'approval/asked', seq: 1, data: { id: 'r-off', toolName: 'bash' } })
+  await flush()
+  assert.deepEqual(sends.map((s) => s.openid), ['CONF'])
+  cleanup()
+  rmSync(dir, { recursive: true, force: true })
 })
 
 test('hostile session shapes never crash the pipeline', async () => {

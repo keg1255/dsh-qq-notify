@@ -24,6 +24,7 @@ import { createLedger } from './ledger.mjs'
 import { sendToRelay } from './relay.mjs'
 import { Dispatcher, TurnEndDebouncer } from './dispatch.mjs'
 import { subscribeGlobal } from './host-events.mjs'
+import { readProjectOpenids } from './targets.mjs'
 import {
   buildApprovalBody,
   buildAskUserBody,
@@ -78,14 +79,23 @@ export async function apply (ctx, rawConfig) {
     console.error(`[${PLUGIN_ID}] disabled by config; staying unloaded`)
     return
   }
-  if (config.openid === '') {
-    console.error(`[${PLUGIN_ID}] no openid configured; notifications would be dropped — staying passive`)
+  if (config.openids.length === 0) {
+    console.error(`[${PLUGIN_ID}] no openid configured; notifications would be dropped — staying passive (set openid/openids in the profile patch, or add ${'`'}.dsh-qq-notify-openids${'`'} to the workspace)`)
     return
   }
 
   const stateDir = resolveStateDir()
   const ledger = createLedger(ledgerPathFor(stateDir))
-  const dispatcher = new Dispatcher(config, (payload) => sendToRelay(config, payload), ledger)
+  /**
+   * Extra per-workspace targets: `<cwd>/.dsh-qq-notify-openids`, one openid per
+   * line, merged with the configured openids on every push.
+   */
+  const dispatcher = new Dispatcher(
+    config,
+    (payload) => sendToRelay(config, payload),
+    ledger,
+    (session) => readProjectOpenids(session?.header?.cwd),
+  )
   const limiter = new SlidingWindowLimiter(config.tool.rateLimitPerMinute)
   const disposers = []
 
@@ -101,7 +111,7 @@ export async function apply (ctx, rawConfig) {
     workspaceName: workspaceNameOf(session),
   })
 
-  console.error(`[${PLUGIN_ID}] loaded (url=${config.url}, ledger=${ledgerPathFor(stateDir) || 'disabled'}, debounce=${config.debounceMs}ms)`)
+  console.error(`[${PLUGIN_ID}] loaded (url=${config.url}, targets=${config.openids.length}${config.projectOpenids ? ' + workspace file' : ''}, ledger=${ledgerPathFor(stateDir) || 'disabled'}, debounce=${config.debounceMs}ms)`)
 
   // ---- session events (approval/asked + turn/end) ------------------------
   disposers.push(subscribeGlobal(ctx, 'session/event', (session, event) => {
@@ -112,7 +122,7 @@ export async function apply (ctx, rawConfig) {
       if (event.type === 'approval/asked') {
         if (!config.events.approval) return
         safeAsync(
-          dispatcher.push('approval', buildApprovalBody(event.data, ctxInfoFor(session)), key),
+          dispatcher.push('approval', buildApprovalBody(event.data, ctxInfoFor(session)), key, session),
           'approval push',
         )
         return
@@ -131,7 +141,7 @@ export async function apply (ctx, rawConfig) {
             const excerpt = readAssistantExcerpt(latest.session, config.summaryMaxChars)
             const body = buildTurnEndBody(latest.event.data, excerpt, ctxInfoFor(latest.session))
             if (body === undefined || body === '') return
-            await dispatcher.push('turn-end:completed', body, dedupKeyFor(latest.session, latest.event))
+            await dispatcher.push('turn-end:completed', body, dedupKeyFor(latest.session, latest.event), latest.session)
           })
           return
         }
@@ -146,7 +156,7 @@ export async function apply (ctx, rawConfig) {
         // cancel the pending delayed agent-error push for this session.
         if (kind === 'error') cancelPendingAgentError(session.id)
         safeAsync(
-          dispatcher.push(`turn-end:${kind}`, body, key),
+          dispatcher.push(`turn-end:${kind}`, body, key, session),
           'turn/end push',
         )
         return
@@ -162,11 +172,13 @@ export async function apply (ctx, rawConfig) {
   if (config.events.askUser) {
     const disposer = subscribeGlobal(ctx, 'user-questions/request', (request, next) => {
       try {
+        const session = request?.agent?.session
         safeAsync(
           dispatcher.push(
             'ask-user',
-            buildAskUserBody(request?.questions, { serverName: config.serverName, workspaceName: workspaceNameOf(request?.agent?.session) }),
+            buildAskUserBody(request?.questions, { serverName: config.serverName, workspaceName: workspaceNameOf(session) }),
             request?.questions?.[0]?.id !== undefined ? `ask:${request.questions[0].id}` : undefined,
+            session,
           ),
           'ask-user push',
         )
@@ -195,12 +207,13 @@ export async function apply (ctx, rawConfig) {
   if (config.events.agentError) {
     const disposer = subscribeGlobal(ctx, 'agent/error', (payload) => {
       try {
-        const sessionKey = payload?.agent?.session?.id
-        const body = buildAgentErrorBody(payload, { serverName: config.serverName, workspaceName: workspaceNameOf(payload?.agent?.session) })
+        const session = payload?.agent?.session
+        const sessionKey = session?.id
+        const body = buildAgentErrorBody(payload, { serverName: config.serverName, workspaceName: workspaceNameOf(session) })
         const timer = setTimeout(() => {
           if (sessionKey !== undefined && sessionKey !== null) pendingAgentErrors.delete(sessionKey)
           safeAsync(
-            dispatcher.push('agent-error', body, null),
+            dispatcher.push('agent-error', body, null, session),
             'agent/error push',
           )
         }, config.agentErrorDelayMs)
@@ -268,7 +281,7 @@ async function registerNotifyTool (ctx, dispatcher, limiter, config) {
     console.error(`[${PLUGIN_ID}] tools registry unavailable; notify tool not registered`)
     return undefined
   }
-  const push = async (content) => dispatcher.push('tool', content)
+  const push = async (content, session) => dispatcher.push('tool', content, undefined, session)
   const definition = await createNotifyTool(push, limiter, { serverName: config.serverName })
   return ctx.tools.register(definition)
 }
